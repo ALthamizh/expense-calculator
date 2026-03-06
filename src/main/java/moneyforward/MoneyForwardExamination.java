@@ -5,203 +5,118 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opencsv.bean.CsvToBeanBuilder;
 import model.Transactions;
 import model.WalletCsv;
-import model.WalletDate;
 import model.WalletJson;
 
+import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
- * author: thamizh
- * Date: 2023/12/17/ 17:30 JST
+ * Reads a wallet CSV file, groups transactions by year/month,
+ * and outputs JSON summaries with income, expenditure, and transaction details.
+ *
+ * @author thamizh
+ *         Date: 2023/12/17 17:30 JST
  */
 public class MoneyForwardExamination {
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd");
 
     /**
-     * Method to load data from csv file based on headers row
-     * map the csv file row into WalletCsv java object
+     * Loads data from a CSV file and maps each row into a WalletCsv object.
      *
-     * @param path csv file path
-     * @return list of parsed java objects based on csv file
-     * @throws IOException due to file processing or missing
+     * @param path CSV file path
+     * @return list of parsed WalletCsv objects
+     * @throws IOException if the file is missing or unreadable
      */
     static List<WalletCsv> csvToWalletCsv(String path) throws IOException {
-        final List<WalletCsv> walletCsvList;
-        try (FileReader fr = new FileReader(path)) {
-            walletCsvList = new CsvToBeanBuilder<WalletCsv>(fr)
+        try (BufferedReader br = new BufferedReader(new FileReader(path))) {
+            return new CsvToBeanBuilder<WalletCsv>(br)
                     .withType(WalletCsv.class)
                     .build()
                     .parse();
         }
-
-        return walletCsvList;
     }
 
     /**
-     * Loaded CSV file data - parse String dates to java LocalDate
-     * Divide the records based on year
-     * store it in map with year as key
+     * Groups CSV records by YearMonth in a single O(n) pass.
+     * Parses the date string into LocalDate and uses YearMonth as the grouping key.
+     * TreeMap ensures chronological output order.
      *
-     * @param csvList to map from String type date to LocalDate type for process
-     * @return return yearly based wallet details
+     * @param csvList the parsed CSV records
+     * @return a TreeMap of YearMonth → list of WalletCsv entries
      */
-    static Map<Integer, List<WalletDate>> walletCsvToWalletDateMapper(final List<WalletCsv> csvList) {
-        /**create arraylist to store date formatted csv records **/
-        final List<WalletDate> walletDateList = new ArrayList<>();
+    static Map<YearMonth, List<WalletCsv>> groupByYearMonth(List<WalletCsv> csvList) {
+        Map<YearMonth, List<WalletCsv>> grouped = new TreeMap<>();
 
-        /**Map each csv row into walletdate type to process data**/
         for (WalletCsv csv : csvList) {
-            WalletDate walletDate = new WalletDate();
-            /** parsing date **/
-            walletDate.setDate(LocalDate.parse(csv.getDate(), DATE_FORMATTER));
-            walletDate.setDeposit(csv.getDeposit());
-            walletDate.setContent(csv.getContent());
-
-            walletDateList.add(walletDate);
+            LocalDate date = LocalDate.parse(csv.getDate(), DATE_FORMATTER);
+            YearMonth ym = YearMonth.from(date);
+            grouped.computeIfAbsent(ym, k -> new ArrayList<>()).add(csv);
         }
 
-        /** create map to store wallet data by years **/
-        final Map<Integer, List<WalletDate>> walletDateMap = new HashMap<>();
-
-        /**
-         * divide csv data based on year
-         * store it in map with year as key
-         */
-        for (WalletDate walletDate : walletDateList) {
-            int year = walletDate.getDate().getYear();
-            var walletDateList1 = walletDateList
-                    .stream()
-                    .filter(walletDate1 -> walletDate1.getDate().getYear() == year)
-                    .collect(Collectors.toList());
-
-            walletDateMap.putIfAbsent(year, walletDateList1);
-        }
-
-        return walletDateMap;
+        return grouped;
     }
 
     /**
-     * Divide further walletdate objects by years
-     * into walletdate by months
+     * Processes grouped data and prints JSON output for each month.
+     * Computes total income, total expenditure, and transaction list in a single
+     * pass
+     * per month group — no redundant streaming.
      *
-     * @param walletDateByYear passing wallet details by year
-     * @return
+     * @param groupedData YearMonth-grouped wallet entries
+     * @throws JsonProcessingException if JSON serialization fails
      */
-    static void mapWalletDateByYearMonthResult(final Map<Integer, List<WalletDate>> walletDateByYear) throws JsonProcessingException {
-
-        final Map<Integer, List<Integer>> yearBasedUniqueMonth = new HashMap<>();
+    static void printMonthlyJson(Map<YearMonth, List<WalletCsv>> groupedData) throws JsonProcessingException {
         ObjectMapper objectMapper = new ObjectMapper();
 
-        for (var entry : walletDateByYear.entrySet()) {
-            var walletDateList = entry.getValue();
-            /**
-             * Filter wallet date by month
-             * store it in map with years as key
-             * unique month for a yeas as value
-             */
-            var months = walletDateList.stream()
-                    .map(x -> x.getDate().getMonth().getValue())
-                    .distinct()
-                    .collect(Collectors.toList());
-            yearBasedUniqueMonth.put(entry.getKey(), months);
-        }
+        for (var entry : groupedData.entrySet()) {
+            YearMonth ym = entry.getKey();
+            List<WalletCsv> monthEntries = entry.getValue();
 
-        /**
-         * Iterate over each month based on years
-         * find totalIncome for a month
-         * find totalExpenditure for a month
-         * store it in WalletJson class
-         */
-        for (var eachUniqueMonth : yearBasedUniqueMonth.entrySet()) {
-            var uniqueMonthsList = eachUniqueMonth.getValue();
-            var eachYear = eachUniqueMonth.getKey();
+            int totalIncome = 0;
+            int totalExpenditure = 0;
+            List<Transactions> transactions = new ArrayList<>(monthEntries.size());
 
-            for (var eachYearUniqueMonth : uniqueMonthsList) {
-
-                var totalIncome = walletDateByYear.get(eachYear)
-                        .stream()
-                        .filter(walletDate -> walletDate.getDate().getYear() == eachYear)
-                        .filter(walletDate -> walletDate.getDate().getMonth().getValue() == eachYearUniqueMonth)
-                        .map(WalletDate::getDeposit)
-                        .filter(deposit -> deposit > 0)
-                        .reduce(0, Integer::sum);
-
-                var totalExpenditure = walletDateByYear.get(eachYear)
-                        .stream()
-                        .filter(walletDate -> walletDate.getDate().getYear() == eachYear)
-                        .filter(walletDate -> walletDate.getDate().getMonth().getValue() == eachYearUniqueMonth)
-                        .map(WalletDate::getDeposit)
-                        .filter(deposit -> deposit < 0)
-                        .reduce(0, Integer::sum);
-
-                var transactionsDateByMonth = walletDateByYear.get(eachYear)
-                        .stream()
-                        .filter(walletDate -> walletDate.getDate().getMonth().getValue() == eachYearUniqueMonth)
-                        .map(walletDate -> {
-                            Transactions tran = new Transactions();
-                            tran.setAmount(walletDate.getDeposit());
-                            tran.setContent(walletDate.getContent());
-                            tran.setDate(String.valueOf(walletDate.getDate().format(DATE_FORMATTER)));
-                            return tran;
-                        })
-                        .collect(Collectors.toList());
-
-                String period = String.valueOf(eachYear).concat("/").concat(String.valueOf(eachYearUniqueMonth));
-
-                WalletJson walletJson = new WalletJson();
-                walletJson.setPeriod(period);
-                walletJson.setTotalIncome(totalIncome);
-                walletJson.setTotalExpenditure(totalExpenditure);
-                walletJson.setWalletDates(transactionsDateByMonth);
-
-                String writeWalletJson = objectMapper.writeValueAsString(walletJson);
-                System.out.println(writeWalletJson);
-
+            // Single pass: accumulate income, expenditure, and build transactions list
+            for (WalletCsv csv : monthEntries) {
+                int deposit = csv.getDeposit();
+                if (deposit > 0) {
+                    totalIncome += deposit;
+                } else {
+                    totalExpenditure += deposit;
+                }
+                transactions.add(new Transactions(csv.getDate(), deposit, csv.getContent()));
             }
+
+            String period = ym.getYear() + "/" + ym.getMonthValue();
+
+            WalletJson walletJson = new WalletJson(period, totalIncome, totalExpenditure, transactions);
+            System.out.println(objectMapper.writeValueAsString(walletJson));
         }
     }
 
     /**
-     * main method - starting point of execution
-     *
-     * @param args
+     * Entry point. Expects a CSV file path as the first command-line argument.
      */
     public static void main(String[] args) {
+        if (args.length == 0 || args[0].isBlank()) {
+            System.err.println("Please pass the file path as a command line argument!");
+            return;
+        }
 
         try {
-            if (!args[0].isBlank()) {
-                String filePath = args[0];
-                /**
-                 * load csv file from a path
-                 * convert csv file into java object
-                 */
-                var walletCsvList = csvToWalletCsv(filePath);
-
-                /**
-                 * map date in string format to LocalDate format
-                 * divide the data by years
-                 */
-                var yearBasedWallet = walletCsvToWalletDateMapper(walletCsvList);
-
-                /**
-                 * Further divide the year based data into months
-                 * finally print the out json
-                 */
-                mapWalletDateByYearMonthResult(yearBasedWallet);
-            } else {
-                System.err.println("Please pass the File path in command line arguments!");
-            }
-
+            List<WalletCsv> csvList = csvToWalletCsv(args[0]);
+            Map<YearMonth, List<WalletCsv>> grouped = groupByYearMonth(csvList);
+            printMonthlyJson(grouped);
         } catch (IOException e) {
-            System.err.println(e.getMessage());
+            System.err.println("File error: " + e.getMessage());
         } catch (Exception e) {
-            System.err.println("Internal error:" + e.getMessage());
+            System.err.println("Internal error: " + e.getMessage());
         }
     }
 }
