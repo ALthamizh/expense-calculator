@@ -1,0 +1,19 @@
+# Compiled class files
+target/
+
+# Maven
+dependency-reduced-pom.xml
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS files
+.DS_Store
+
+# Log files
+*.log
