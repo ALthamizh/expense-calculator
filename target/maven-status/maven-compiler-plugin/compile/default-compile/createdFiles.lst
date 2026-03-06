@@ -1,0 +1,4 @@
+model/WalletJson.class
+model/WalletCsv.class
+model/Transactions.class
+moneyforward/MoneyForwardExamination.class
